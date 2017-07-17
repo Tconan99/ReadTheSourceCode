@@ -1,4 +1,6 @@
-# Kingfisher笔记
+# [Kingfisher笔记](https://github.com/onevcat/Kingfisher.git)
+
+
 
 ## 一、知识点
 1. NSCache
@@ -9,6 +11,13 @@
 6. Dictionary的排序写法
 7. CGImageSourceCreateWithData
 8. CGImageSource
+9. 单例
+10. NSError
+11. extension
+12. 自定义运算符
+13. 面对回收的原理
+14. CADisplayLink
+15. RunLoopMode
 
 ## 二、示例
 
@@ -57,7 +66,7 @@ fileprivate func travelCachedFiles(onlyForCacheSize: Bool) -> (urlsToDelete: [UR
 }
 ```
 
-## 2. 排序
+### 2. 排序
 
 ```
 extension Dictionary {
@@ -87,7 +96,7 @@ let sortedFiles = cachedFiles.keysSortedByValue {
 }
 ```
 
-## CGImageSource
+### CGImageSource
 
 ```
 let options: NSDictionary = [kCGImageSourceShouldCache as String: true, kCGImageSourceTypeIdentifierHint as String: kUTTypeGIF]
@@ -109,11 +118,11 @@ for i in 0 ..< frameCount {
 
 ```
 
-## 单例
+### 单例
 
 static let 可以直接创建一个单例，系统会自动调用dispatch_once
 
-## NSError
+### NSError
 
 ```
 NSError(domain: KingfisherErrorDomain,
@@ -122,7 +131,7 @@ NSError(domain: KingfisherErrorDomain,
 ```
 
 
-## 扩展(extension)
+### 扩展(extension)
 
 扩展属性(只能是计算属性)
 
@@ -154,7 +163,7 @@ extension URL: Resource {
 }
 ```
 
-## 自定义运算符
+### 自定义运算符
 
 看起来像是炫耀技巧，这样写是否有必要
 
@@ -189,5 +198,144 @@ func <== (lhs: KingfisherOptionsInfoItem, rhs: KingfisherOptionsInfoItem) -> Boo
     case (.cacheOriginalImage, .cacheOriginalImage): return true
     default: return false
     }
+}
+```
+
+### CADisplayLink 惰性加载
+
+```
+private lazy var displayLink: CADisplayLink = {
+    self.isDisplayLinkInitialized = true
+    let displayLink = CADisplayLink(target: TargetProxy(target: self), selector: #selector(TargetProxy.onScreenUpdate))
+    displayLink.add(to: .main, forMode: self.runLoopMode)
+    displayLink.isPaused = true
+    return displayLink
+}()
+```
+
+### RunLoopMode.commonModes
+
+```
+/// The animation timer's run loop mode. Default is `NSRunLoopCommonModes`. Set this property to `NSDefaultRunLoopMode` will make the animation pause during UIScrollView scrolling.
+public var runLoopMode = RunLoopMode.commonModes {
+    willSet {
+        if runLoopMode == newValue {
+            return
+        } else {
+            stopAnimating()
+            displayLink.remove(from: .main, forMode: runLoopMode)
+            displayLink.add(to: .main, forMode: newValue)
+            startAnimating()
+        }
+    }
+}
+```
+
+## 三、逻辑
+
+程序员大多数时候都是直接使用这个方法来加载图片
+
+```
+// ViewController.swift
+
+(cell as! CollectionViewCell).cellImageView.kf.setImage(with: url)
+```
+
+这个代码里面写了很多逻辑重点是加载图片这行代码
+
+```
+// ImageView+Kingfisher.swift
+
+let task = KingfisherManager.shared.retrieveImage()
+```
+
+retrieveImage 就是加载图片的总方法, 里面包含了下载与使用缓存的判断写法
+
+```
+// KingfisherManager.swift
+
+public func retrieveImage() {
+	if options.forceRefresh {
+		_ = downloadAndCacheImage()
+	} else {
+		tryToRetrieveImageFromCache()
+	}
+}
+```
+
+downloadAndCacheImage() 这个方法, 就是直接下载图片并且放在缓存里面
+
+```
+// KingfisherManager.swift
+
+func downloadAndCacheImage() {
+	downloader.downloadImage()
+}
+```
+
+tryToRetrieveImageFromCache() , 这个方法是包括了 downloadAndCacheImage() 这个方法的, 如果发现缓存则加载缓存, 如果没有发现缓存则直接下载
+
+```
+// KingfisherManager.swift
+
+func tryToRetrieveImageFromCache() {
+	func handleNoCache() {
+		if option.onlyFromCache {
+			return
+		}
+		self.downloadAndCachedImage()
+	}
+	
+	targetCache.retrieveImage() {
+		if image != nil {
+			completion()
+			return
+		}
+		
+		guard processor != DefaultImageProcesser.default else {
+			handleNoCache()
+			return
+		}
+		
+		// 重置option, 不同的option加载缓存的结果不同
+		targetCache.retrieveImage() {
+			
+		}
+	}
+}
+```
+
+retrieveImage() 主要就是从cache和disk获取数据
+
+```
+// ImageDownloader.swift
+
+func retrieveImage() {
+	if let image = self.retrieveImageInMemoryCache() {
+		completion()
+	} else {
+		// 切换到IO线程
+		self.retrieveImageInDiskCache()
+	}
+}
+```
+
+downloadImage() 就是下载图片, 但是涉及多线程还有 var fetchLoads = \[URL: ImageFetchLoad]() 的概念, 大意就是多处发起同一个下载, 用url做key来区分是不是同一个图片, 只要下载有进度或者有通知就通知所有挂载的位置
+
+```
+// ImageDownloader.swift
+
+func downloadImage() {
+	setup() {
+		session.dataTask(with: request)	// 开始下载
+	}
+	
+	func setup(started: _) {
+		func prepareFetchLoad() {
+			started()
+		}
+		
+		prepareFetchLoad()
+	}
 }
 ```
